@@ -44,7 +44,7 @@ void cuda_prep(double* U_base, double* U0_base, double* dU_base) {
 
 __global__
 void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
-		double* dt_max) {
+		double* avisc) {
 	int nx, ny, nz;
 	int xi, yi, zi;
 	int nx1, ny1, nz1;
@@ -165,21 +165,12 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 		atomicAdd(&(dU[f][idx]), F[f] / dx);
 		atomicAdd(&(dU[f][idx - di]), -F[f] / dx);
 	}
-	if (dt_max != nullptr) {
+	if (avisc != nullptr) {
 		const int tid = threadIdx.x;
-		const int max_id = blockDim.x;
 		const int D = gridDim.x * gridDim.y;
 		const int offset = blockIdx.x + gridDim.x * blockIdx.y;
 		const int myid = D * tid + offset;
-		const int topid = 1 << (31 - __clz(max_id));
-		dt_max[myid] = dx / a;
-		for (int num = topid; num > 0; num >>= 2) {
-			if ((tid < num) && (tid + num < topid)) {
-				const int o_id = D * (tid + num) + offset;
-				dt_max[myid] = fmin(dt_max[myid], dt_max[o_id]);
-			}
-			__syncthreads();
-		}
+		avisc[myid] = a;
 	}
 
 }
@@ -220,8 +211,8 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 	static double* U;
 	static double* U0;
 	static double* dU;
-	static double* dt_max[NDIM];
-	static double* local_dt_max[NDIM];
+	static double* avisc[NDIM];
+	static double* local_avisc[NDIM];
 
 	static dim3 blocks[NDIM];
 	static dim3 threads[NDIM];
@@ -239,8 +230,8 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 		threads[ZDIM] = dim3(nz - 2 * BW + 1);
 		for (int dim = 0; dim != NDIM; ++dim) {
 			const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
-			cudaMalloc(&(dt_max[dim]), this_sz * sizeof(double));
-			local_dt_max[dim] = new double[blocks[dim].x * blocks[dim].y];
+			cudaMalloc(&(avisc[dim]), this_sz * sizeof(double));
+			local_avisc[dim] = new double[this_sz];
 		}
 		cudaMalloc(&U, NF * sz * sizeof(double));
 		cudaMalloc(&U0, NF * sz * sizeof(double));
@@ -272,14 +263,14 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 			dt_fut[dim] =
 					std::async(std::launch::async,
 							[=]() {
-								INVOKE(cuda_hydro, (blocks[dim]),(threads[dim]),U, dU, dx, dim, (di[dim]), (rk == 0 ? dt_max[dim] : nullptr));
+								INVOKE(cuda_hydro, (blocks[dim]),(threads[dim]),U, dU, dx, dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
 								double dt = std::numeric_limits<double>::max();
 								if (rk == 0) {
-									const int this_sz = blocks[dim].x * blocks[dim].y;
-									cudaMemcpy(local_dt_max[dim], dt_max[dim], this_sz * sizeof(double),
+									const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
+									cudaMemcpy(local_avisc[dim], avisc[dim], this_sz * sizeof(double),
 											cudaMemcpyDeviceToHost);
 									for (int b = 0; b < this_sz; ++b) {
-										dt = std::min(dt, CFL * local_dt_max[dim][b]);
+										dt = std::min(dt, CFL * dx / local_avisc[dim][b]);
 									}
 								}
 								return dt;
