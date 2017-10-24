@@ -4,14 +4,30 @@
 
 #define NRK 2
 #define CFL 0.4
+#define DE_SWITCH_1 double(0.001)
+#define DE_SWITCH_2 double(0.01)
+#define THETA 1.3
 
-#define INVOKE( func, blocks, threads, ...) \
+#define INVOKE2( func, blocks, threads, ...) \
 	func <<< blocks, threads >>> ( __VA_ARGS__ ); \
 	cudaStreamSynchronize(0)
 
+#define INVOKE3( func, blocks, threads, size, ...) \
+	func <<< blocks, threads, size >>> ( __VA_ARGS__ ); \
+	cudaStreamSynchronize(0)
+
 __device__
-double minmod(double a, double b) {
+inline double minmod(double a, double b) {
 	return (copysign(0.5, a) + copysign(0.5, b)) * fmin(fabs(a), fabs(b));
+}
+
+__device__
+inline double minmod_theta(double a, double b) {
+	return minmod(double(THETA) * minmod(a, b), double(0.5) * (a + b));
+}
+
+void cuda_exit() {
+	cudaDeviceReset();
 }
 
 __global__
@@ -43,11 +59,14 @@ void cuda_prep(double* U_base, double* U0_base, double* dU_base) {
 }
 
 __global__
-void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
+void cuda_flux(double* U_base, double* dU_base, double dx, int dim, int di,
 		double* avisc) {
 	int nx, ny, nz;
 	int xi, yi, zi;
 	int nx1, ny1, nz1;
+
+	__shared__
+	extern double shared_real[];
 
 	switch (dim) {
 	case XDIM:
@@ -72,7 +91,8 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 		ny1 = ny + 2 * BW - 1;
 		nz1 = nz + 2 * BW;
 		break;
-	case ZDIM:
+		/*case ZDIM:*/
+	default:
 		nz = blockDim.x;
 		nx = gridDim.x;
 		ny = gridDim.y;
@@ -82,12 +102,10 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 		nx1 = nx + 2 * BW;
 		ny1 = ny + 2 * BW;
 		nz1 = nz + 2 * BW - 1;
-		break;
 	}
 
 	const int idx = (xi + BW) + nx1 * (yi + BW) + (nx1 * ny1) * (zi + BW);
 	const int sz = (nx1) * (ny1) * (nz1);
-	const double gamma = 5.0 / 3.0;
 	double F[NF];
 	double* U[NF];
 	double* dU[NF];
@@ -102,9 +120,7 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 		}
 		U[mom_dim][idx - 2 * di] = U[mom_dim][idx - di] = fmax(0.0,
 				U[mom_dim][idx]);
-	}
-	__syncthreads();
-	if (threadIdx.x == blockDim.x - 2) {
+	} else if (threadIdx.x == blockDim.x - 2) {
 		for (int f = 0; f != NF; ++f) {
 			U[f][idx + 2 * di] = U[f][idx + di] = U[f][idx];
 		}
@@ -113,9 +129,9 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 	}
 	__syncthreads();
 
-	double up1, um1;
-	double up2, um2;
+	double dxinv = double(1.0) / dx;
 	double slm, slp;
+	double vm2[NF], vm1[NF], vp1[NF], vp2[NF];
 	double UR[NF], UL[NF];
 	double ar, al;
 	double pl, pr;
@@ -124,37 +140,64 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 	double ekr, ekl;
 	double eir, eil;
 	double a;
+	const int im2 = idx - 2 * di;
+	const int im1 = idx - di;
+	const int ip1 = idx;
+	const int ip2 = idx + di;
+	vm2[den_i] = U[den_i][im2];
+	vm1[den_i] = U[den_i][im1];
+	vp1[den_i] = U[den_i][ip1];
+	vp2[den_i] = U[den_i][ip2];
+	const double rho_m2_inv = 1.0 / U[den_i][im2];
+	const double rho_m1_inv = 1.0 / U[den_i][im1];
+	const double rho_p1_inv = 1.0 / U[den_i][ip1];
+	const double rho_p2_inv = 1.0 / U[den_i][ip2];
+	for (int f = 1; f < NF; ++f) {
+		vm2[f] = U[f][im2] * rho_m2_inv;
+		vm1[f] = U[f][im1] * rho_m1_inv;
+		vp1[f] = U[f][ip1] * rho_p1_inv;
+		vp2[f] = U[f][ip2] * rho_p2_inv;
+	}
 	for (int f = 0; f != NF; ++f) {
-		um2 = U[f][idx - 2 * di];
-		um1 = U[f][idx - di];
-		up1 = U[f][idx];
-		up2 = U[f][idx + di];
-		slm = minmod(um1 - um2, up1 - um1);
-		slp = minmod(up1 - um1, up2 - up1);
-		UL[f] = um1 + 0.5 * slm;
-		UR[f] = up1 - 0.5 * slp;
+		slm = minmod_theta(vm1[f] - vm2[f], vp1[f] - vm1[f]);
+		slp = minmod_theta(vp1[f] - vm1[f], vp2[f] - vp1[f]);
+		UL[f] = vm1[f] + 0.5 * slm;
+		UR[f] = vp1[f] - 0.5 * slp;
+	}
+	for (int f = 1; f < NF; ++f) {
+		UL[f] *= UL[den_i];
+		UR[f] *= UR[den_i];
 	}
 	ekr = ekl = 0.0;
 	for (int d = 0; d != NDIM; ++d) {
 		ekl += UL[mom_i + d] * UL[mom_i + d];
 		ekr += UR[mom_i + d] * UR[mom_i + d];
 	}
-	ekl *= 0.5 / UL[den_i];
-	ekr *= 0.5 / UR[den_i];
-	eil = UL[ene_i] - ekl;
-	eir = UR[ene_i] - ekr;
-	pl = (gamma - 1.0) * eil;
-	pr = (gamma - 1.0) * eir;
-	cl = sqrt(gamma * pl / UL[den_i]);
-	cr = sqrt(gamma * pr / UR[den_i]);
-	vl = UL[mom_dim] / UL[den_i];
-	vr = UR[mom_dim] / UR[den_i];
+	const double rhoLinv = double(1.0) / UL[den_i];
+	const double rhoRinv = double(1.0) / UR[den_i];
+	ekl *= 0.5 * rhoLinv;
+	ekr *= 0.5 * rhoRinv;
+	const double etl = UL[ene_i];
+	const double etr = UR[ene_i];
+	eil = etl - ekl;
+	eir = etr - ekr;
+	if (eil < etl * DE_SWITCH_1) {
+		eil = pow(UL[tau_i], FGAMMA);
+	}
+	if (eir < etr * DE_SWITCH_1) {
+		eir = pow(UR[tau_i], FGAMMA);
+	}
+	pl = (FGAMMA - 1.0) * eil;
+	pr = (FGAMMA - 1.0) * eir;
+	cl = sqrt(FGAMMA * pl * rhoLinv);
+	cr = sqrt(FGAMMA * pr * rhoRinv);
+	vl = UL[mom_dim] * rhoLinv;
+	vr = UR[mom_dim] * rhoRinv;
 	al = fabs(vl) + cl;
 	ar = fabs(vr) + cr;
 	a = fmax(al, ar);
 	for (int f = 0; f != NF; ++f) {
-		F[f] = -a * (UR[f] - UL[f]);
-		F[f] += vr * UR[f] + vl * UL[f];
+		F[f] = vr * UR[f] + vl * UL[f] - a * (UR[f] - UL[f]);
 	}
 	F[mom_dim] += pl + pr;
 	F[ene_i] += vl * pl + vr * pr;
@@ -162,15 +205,13 @@ void cuda_hydro(double* U_base, double* dU_base, double dx, int dim, int di,
 		F[f] *= 0.5;
 	}
 	for (int f = 0; f != NF; ++f) {
-		atomicAdd(&(dU[f][idx]), F[f] / dx);
-		atomicAdd(&(dU[f][idx - di]), -F[f] / dx);
+		atomicAdd(&(dU[f][idx]), F[f] * dxinv);
+		atomicAdd(&(dU[f][idx - di]), -F[f] * dxinv);
 	}
 	if (avisc != nullptr) {
-		const int tid = threadIdx.x;
-		const int D = gridDim.x * gridDim.y;
-		const int offset = blockIdx.x + gridDim.x * blockIdx.y;
-		const int myid = D * tid + offset;
-		avisc[myid] = a;
+		int tid = threadIdx.x
+				+ blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
+		avisc[tid] = a;
 	}
 
 }
@@ -194,13 +235,22 @@ void cuda_advance(double* U_base, double* U0_base, double* dU_base, double dt,
 		U0[f] = U0_base + f * sz;
 		dU[f] = dU_base + f * sz;
 	}
-	__syncthreads();
 	for (int f = 0; f != NF; ++f) {
 		U[f][idx] += beta * dt * dU[f][idx]
 				+ (U0[f][idx] - U[f][idx]) * (1.0 - beta);
 		dU[f][idx] = 0.0;
 	}
-
+	double ek = 0.0;
+	const double rhoinv = double(1.0) / U[den_i][idx];
+	for (int dim = 0; dim != NDIM; ++dim) {
+		ek += U[mom_i + dim][idx] * U[mom_i + dim][idx];
+	}
+	ek *= 0.5 * rhoinv;
+	const double etot = U[ene_i][idx];
+	const double ei = etot - ek;
+	if (ei > etot * DE_SWITCH_2) {
+		U[tau_i][idx] = pow(ei, 1.0 / FGAMMA);
+	}
 }
 
 double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
@@ -250,7 +300,7 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 
 	const int di[NDIM] = { 1, nx, nx * ny };
 
-	INVOKE(cuda_prep, blocks0, threads0, U, U0, dU);
+	INVOKE2(cuda_prep, blocks0, threads0, U, U0, dU);
 
 	std::future<double> dt_fut[NDIM];
 
@@ -263,7 +313,7 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 			dt_fut[dim] =
 					std::async(std::launch::async,
 							[=]() {
-								INVOKE(cuda_hydro, (blocks[dim]),(threads[dim]),U, dU, dx, dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
+								INVOKE2(cuda_flux, (blocks[dim]),(threads[dim]),U, dU, dx, dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
 								double dt = std::numeric_limits<double>::max();
 								if (rk == 0) {
 									const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
@@ -283,7 +333,7 @@ double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
 				dt = std::min(dt, this_dt);
 			}
 		}
-		/**/INVOKE(cuda_advance, blocks0, threads0, U, U0, dU, dt, beta);
+		/**/INVOKE2(cuda_advance, blocks0, threads0, U, U0, dU, dt, beta);
 
 		/**/}
 

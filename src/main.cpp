@@ -2,10 +2,11 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <cmath>
 
 int main() {
 
-	const int nx = 256;
+	const int nx = 128;
 	const int ny = nx;
 	const int nz = nx;
 
@@ -23,23 +24,24 @@ int main() {
 				}
 				if (k < nz / 2) {
 					U[den_i][iii] = 1.0;
-					U[ene_i][iii] = 1.0;
+					U[ene_i][iii] = 2.5;
 				} else {
-					U[den_i][iii] = 0.1;
-					U[ene_i][iii] = 0.1;
+					U[den_i][iii] = 0.125;
+					U[ene_i][iii] = 0.25;
 				}
+				U[tau_i][iii] = std::pow(U[den_i][iii], 1.0 / FGAMMA);
 			}
 		}
 	}
 	double* s[NDIM] = { U[mom_i + XDIM], U[mom_i + YDIM], U[mom_i + ZDIM] };
 	double t = 0.0;
-	for (int ti = 0; ti < 50; ++ti) {
+	for (int ti = 0; ti < 100; ++ti) {
 		auto dt = cuda_hydro_wrapper(U[den_i], s, U[ene_i], nx, ny, nz,
 				1.0 / nz);
 		char* ptr;
 		if (asprintf(&ptr, "X.%i.dat", int(ti)) == 0) {
 			assert(false);
-			printf( "error\n");
+			printf("error\n");
 			abort();
 		}
 		FILE* fp = fopen(ptr, "wt");
@@ -53,6 +55,6 @@ int main() {
 		free(ptr);
 		printf("%i %e %e\n", ti, t, dt);
 	}
-
+	cuda_exit();
 	return EXIT_SUCCESS;
 }
