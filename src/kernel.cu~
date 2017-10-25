@@ -2,24 +2,11 @@
 #include <future>
 #include "kernel.hpp"
 
-#ifdef _DOUBLE
-#pragma message( "Compiling with double precision.")
-#if  _DU_DOUBLE
-using du_real = double;
-#else
-using du_real = float;
-#pragma message( "Compiling with single precision accumulator.")
-#endif
-#else
-#pragma message( "Compiling with single precision.")
-using du_real = float;
-#endif
-
 #define NRK 2
-#define CFL real(0.4)
-#define DE_SWITCH_1 real(0.001)
-#define DE_SWITCH_2 real(0.01)
-#define THETA real(1.3)
+#define CFL 0.4
+#define DE_SWITCH_1 double(0.001)
+#define DE_SWITCH_2 double(0.01)
+#define THETA 1.3
 
 #define INVOKE2( func, blocks, threads, ...) \
 	func <<< blocks, threads >>> ( __VA_ARGS__ ); \
@@ -30,13 +17,13 @@ using du_real = float;
 	cudaStreamSynchronize(0)
 
 __device__
-inline real minmod(real a, real b) {
+inline double minmod(double a, double b) {
 	return (copysign(0.5, a) + copysign(0.5, b)) * fmin(fabs(a), fabs(b));
 }
 
 __device__
-inline real minmod_theta(real a, real b) {
-	return minmod(real(THETA) * minmod(a, b), real(0.5) * (a + b));
+inline double minmod_theta(double a, double b) {
+	return minmod(double(THETA) * minmod(a, b), double(0.5) * (a + b));
 }
 
 void cuda_exit() {
@@ -44,7 +31,7 @@ void cuda_exit() {
 }
 
 __global__
-void cuda_prep(real* U_base, real* U0_base, du_real* dU_base) {
+void cuda_prep(double* U_base, double* U0_base, double* dU_base) {
 	const int nx = blockDim.x;
 	const int ny = gridDim.x;
 	const int nz = gridDim.y;
@@ -56,9 +43,9 @@ void cuda_prep(real* U_base, real* U0_base, du_real* dU_base) {
 	const int nz1 = nz + 2 * BW;
 	const int sz = nx1 * ny1 * nz1;
 	const int idx = (xi + BW) + nx1 * (yi + BW) + (nx1 * ny1) * (zi + BW);
-	real* U[NF];
-	real* U0[NF];
-	du_real* dU[NF];
+	double* U[NF];
+	double* U0[NF];
+	double* dU[NF];
 	for (int f = 0; f != NF; ++f) {
 		U[f] = U_base + f * sz;
 		U0[f] = U0_base + f * sz;
@@ -72,16 +59,14 @@ void cuda_prep(real* U_base, real* U0_base, du_real* dU_base) {
 }
 
 __global__
-void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
-		real* avisc) {
-
-
+void cuda_flux(double* U_base, double* dU_base, double dx, int dim, int di,
+		double* avisc) {
 	int nx, ny, nz;
 	int xi, yi, zi;
 	int nx1, ny1, nz1;
 
 	__shared__
-	extern real shared_real[];
+	extern double shared_real[];
 
 	switch (dim) {
 	case XDIM:
@@ -121,9 +106,9 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 
 	const int idx = (xi + BW) + nx1 * (yi + BW) + (nx1 * ny1) * (zi + BW);
 	const int sz = (nx1) * (ny1) * (nz1);
-	real F[NF];
-	real* U[NF];
-	du_real* dU[NF];
+	double F[NF];
+	double* U[NF];
+	double* dU[NF];
 	for (int f = 0; f != NF; ++f) {
 		U[f] = U_base + f * sz;
 		dU[f] = dU_base + f * sz;
@@ -144,17 +129,17 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 	}
 	__syncthreads();
 
-	real dxinv = real(1.0) / dx;
-	real slm, slp;
-	real vm2[NF], vm1[NF], vp1[NF], vp2[NF];
-	real UR[NF], UL[NF];
-	real ar, al;
-	real pl, pr;
-	real vl, vr;
-	real cl, cr;
-	real ekr, ekl;
-	real eir, eil;
-	real a;
+	double dxinv = double(1.0) / dx;
+	double slm, slp;
+	double vm2[NF], vm1[NF], vp1[NF], vp2[NF];
+	double UR[NF], UL[NF];
+	double ar, al;
+	double pl, pr;
+	double vl, vr;
+	double cl, cr;
+	double ekr, ekl;
+	double eir, eil;
+	double a;
 	const int im2 = idx - 2 * di;
 	const int im1 = idx - di;
 	const int ip1 = idx;
@@ -163,10 +148,10 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 	vm1[den_i] = U[den_i][im1];
 	vp1[den_i] = U[den_i][ip1];
 	vp2[den_i] = U[den_i][ip2];
-	const real rho_m2_inv = 1.0 / U[den_i][im2];
-	const real rho_m1_inv = 1.0 / U[den_i][im1];
-	const real rho_p1_inv = 1.0 / U[den_i][ip1];
-	const real rho_p2_inv = 1.0 / U[den_i][ip2];
+	const double rho_m2_inv = 1.0 / U[den_i][im2];
+	const double rho_m1_inv = 1.0 / U[den_i][im1];
+	const double rho_p1_inv = 1.0 / U[den_i][ip1];
+	const double rho_p2_inv = 1.0 / U[den_i][ip2];
 	for (int f = 1; f < NF; ++f) {
 		vm2[f] = U[f][im2] * rho_m2_inv;
 		vm1[f] = U[f][im1] * rho_m1_inv;
@@ -188,12 +173,12 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 		ekl += UL[mom_i + d] * UL[mom_i + d];
 		ekr += UR[mom_i + d] * UR[mom_i + d];
 	}
-	const real rhoLinv = real(1.0) / UL[den_i];
-	const real rhoRinv = real(1.0) / UR[den_i];
+	const double rhoLinv = double(1.0) / UL[den_i];
+	const double rhoRinv = double(1.0) / UR[den_i];
 	ekl *= 0.5 * rhoLinv;
 	ekr *= 0.5 * rhoRinv;
-	const real etl = UL[ene_i];
-	const real etr = UR[ene_i];
+	const double etl = UL[ene_i];
+	const double etr = UR[ene_i];
 	eil = etl - ekl;
 	eir = etr - ekr;
 	if (eil < etl * DE_SWITCH_1) {
@@ -219,10 +204,25 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 	for (int f = 0; f != NF; ++f) {
 		F[f] *= 0.5;
 	}
-	for (int f = 0; f != NF; ++f) {
-		atomicAdd(&(dU[f][idx]), du_real(F[f] * dxinv));
-		atomicAdd(&(dU[f][idx - di]), -du_real(F[f] * dxinv));
+	const bool even = threadIdx.x % 2 == 0;
+	if( even ) {
+		for( int f = 0; f != NF; ++f ) {
+			dU[f][idx] += F[f] * dxinv;
+		}
+		__syncthreads();
+		for( int f = 0; f != NF; ++f ) {
+			dU[f][idx] += F[f] * dxinv;
+		}
+	} else {
+		for( int f = 0; f != NF; ++f ) {
+			dU[f][idx] += F[f] * dxinv;
+		}
+		__syncthreads();
+		for( int f = 0; f != NF; ++f ) {
+			dU[f][idx] += F[f] * dxinv;
+		}
 	}
+
 	if (avisc != nullptr) {
 		int tid = threadIdx.x
 				+ blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
@@ -232,8 +232,8 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 }
 
 __global__
-void cuda_advance(real* U_base, real* U0_base, du_real* dU_base, real dt,
-		real beta) {
+void cuda_advance(double* U_base, double* U0_base, double* dU_base, double dt,
+		double beta) {
 	const int nx1 = blockDim.x + 2 * BW;
 	const int ny1 = gridDim.x + 2 * BW;
 	const int nz1 = gridDim.y + 2 * BW;
@@ -242,50 +242,49 @@ void cuda_advance(real* U_base, real* U0_base, du_real* dU_base, real dt,
 	const int zi = blockIdx.y;
 	const int idx = (xi + BW) + nx1 * (yi + BW) + (nx1 * ny1) * (zi + BW);
 	const int sz = (nx1) * (ny1) * (nz1);
-	real* U[NF];
-	real* U0[NF];
-	du_real* dU[NF];
+	double* U[NF];
+	double* U0[NF];
+	double* dU[NF];
 	for (int f = 0; f != NF; ++f) {
 		U[f] = U_base + f * sz;
 		U0[f] = U0_base + f * sz;
 		dU[f] = dU_base + f * sz;
 	}
 	for (int f = 0; f != NF; ++f) {
-		U[f][idx] += beta * dt * real(dU[f][idx])
+		U[f][idx] += beta * dt * dU[f][idx]
 				+ (U0[f][idx] - U[f][idx]) * (1.0 - beta);
-		dU[f][idx] = du_real(0.0);
+		dU[f][idx] = 0.0;
 	}
-	real ek = 0.0;
-	const real rhoinv = real(1.0) / U[den_i][idx];
+	double ek = 0.0;
+	const double rhoinv = double(1.0) / U[den_i][idx];
 	for (int dim = 0; dim != NDIM; ++dim) {
 		ek += U[mom_i + dim][idx] * U[mom_i + dim][idx];
 	}
 	ek *= 0.5 * rhoinv;
-	const real etot = U[ene_i][idx];
-	const real ei = etot - ek;
+	const double etot = U[ene_i][idx];
+	const double ei = etot - ek;
 	if (ei > etot * DE_SWITCH_2) {
 		U[tau_i][idx] = pow(ei, 1.0 / FGAMMA);
 	}
 }
 
-real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
-		int nz, real dx, real dy, real dz) {
+double cuda_hydro_wrapper(double* rho, double* s[NDIM], double* egas, int nx,
+		int ny, int nz, double dx) {
 	static bool first_call = true;
 	const int sz = nx * ny * nz;
 
-	static real* U;
-	static real* U0;
-	static du_real* dU;
-	static real* avisc[NDIM];
-	static real* local_avisc[NDIM];
-	static real dX[] = { dx, dy, dz };
+	static double* U;
+	static double* U0;
+	static double* dU;
+	static double* avisc[NDIM];
+	static double* local_avisc[NDIM];
 
 	static dim3 blocks[NDIM];
 	static dim3 threads[NDIM];
 	static dim3 blocks0(ny - 2 * BW, nz - 2 * BW);
 	static dim3 threads0(nx - 2 * BW);
 
-	real dt;
+	double dt;
 
 	if (first_call) {
 		blocks[XDIM] = dim3(ny - 2 * BW, nz - 2 * BW);
@@ -296,19 +295,21 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 		threads[ZDIM] = dim3(nz - 2 * BW + 1);
 		for (int dim = 0; dim != NDIM; ++dim) {
 			const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
-			cudaMalloc(&(avisc[dim]), this_sz * sizeof(real));
-			local_avisc[dim] = new real[this_sz];
+			cudaMalloc(&(avisc[dim]), this_sz * sizeof(double));
+			local_avisc[dim] = new double[this_sz];
 		}
-		cudaMalloc(&U, NF * sz * sizeof(real));
-		cudaMalloc(&U0, NF * sz * sizeof(real));
-		cudaMalloc(&dU, NF * sz * sizeof(du_real));
+		cudaMalloc(&U, NF * sz * sizeof(double));
+		cudaMalloc(&U0, NF * sz * sizeof(double));
+		cudaMalloc(&dU, NF * sz * sizeof(double));
 		first_call = false;
 	}
 
-	cudaMemcpy(U + sz * den_i, rho, sz * sizeof(real), cudaMemcpyHostToDevice);
-	cudaMemcpy(U + sz * ene_i, egas, sz * sizeof(real), cudaMemcpyHostToDevice);
+	cudaMemcpy(U + sz * den_i, rho, sz * sizeof(double),
+			cudaMemcpyHostToDevice);
+	cudaMemcpy(U + sz * ene_i, egas, sz * sizeof(double),
+			cudaMemcpyHostToDevice);
 	for (int d = 0; d != NDIM; ++d) {
-		cudaMemcpy(U + sz * (mom_i + d), s[d], sz * sizeof(real),
+		cudaMemcpy(U + sz * (mom_i + d), s[d], sz * sizeof(double),
 				cudaMemcpyHostToDevice);
 	}
 
@@ -316,25 +317,25 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 
 	INVOKE2(cuda_prep, blocks0, threads0, U, U0, dU);
 
-	std::future < real > dt_fut[NDIM];
+	std::future<double> dt_fut[NDIM];
 
-	dt = std::numeric_limits < real > ::max();
+	dt = std::numeric_limits<double>::max();
 
 	for (int rk = 0; rk < NRK; ++rk) {
-		const real beta = rk == 0 ? 1.0 : 0.5;
+		const double beta = rk == 0 ? 1.0 : 0.5;
 
 		for (int dim = 0; dim != NDIM; ++dim) {
 			dt_fut[dim] =
 					std::async(std::launch::async,
 							[=]() {
-								INVOKE2(cuda_flux, (blocks[dim]),(threads[dim]),U, dU, dX[dim], dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
-								real dt = std::numeric_limits<real>::max();
+								INVOKE2(cuda_flux, (blocks[dim]),(threads[dim]),U, dU, dx, dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
+								double dt = std::numeric_limits<double>::max();
 								if (rk == 0) {
 									const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
-									cudaMemcpy(local_avisc[dim], avisc[dim], this_sz * sizeof(real),
+									cudaMemcpy(local_avisc[dim], avisc[dim], this_sz * sizeof(double),
 											cudaMemcpyDeviceToHost);
 									for (int b = 0; b < this_sz; ++b) {
-										dt = std::min(dt, CFL * dX[dim] / local_avisc[dim][b]);
+										dt = std::min(dt, CFL * dx / local_avisc[dim][b]);
 									}
 								}
 								return dt;
@@ -342,7 +343,7 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 		}
 
 		for (int dim = 0; dim != NDIM; ++dim) {
-			const real this_dt = dt_fut[dim].get();
+			const double this_dt = dt_fut[dim].get();
 			if (rk == 0) {
 				dt = std::min(dt, this_dt);
 			}
@@ -351,10 +352,12 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 
 		/**/}
 
-	cudaMemcpy(rho, U + sz * den_i, sz * sizeof(real), cudaMemcpyDeviceToHost);
-	cudaMemcpy(egas, U + sz * ene_i, sz * sizeof(real), cudaMemcpyDeviceToHost);
+	cudaMemcpy(rho, U + sz * den_i, sz * sizeof(double),
+			cudaMemcpyDeviceToHost);
+	cudaMemcpy(egas, U + sz * ene_i, sz * sizeof(double),
+			cudaMemcpyDeviceToHost);
 	for (int d = 0; d != NDIM; ++d) {
-		cudaMemcpy(s[d], U + sz * (mom_i + d), sz * sizeof(real),
+		cudaMemcpy(s[d], U + sz * (mom_i + d), sz * sizeof(double),
 				cudaMemcpyDeviceToHost);
 	}
 

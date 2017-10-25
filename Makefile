@@ -3,6 +3,8 @@ COMMONFLAGS += -O3
 COMMONFLAGS += -DNDEBUG
 #COMMONFLAGS += -g
 COMMONFLAGS += -std=c++11
+#COMMONFLAGS += -D_DU_DOUBLE -D_DOUBLE
+COMMONFLAGS += -D_FLOAT
 
 CXXFLAGS = 
 
@@ -11,8 +13,8 @@ CUFLAGS += -arch=compute_60
 CUFLAGS += -D_FORCE_INLINES
 
 LDFLAGS =
-LDFLAGS += -lsiloh5
 LDFLAGS += -lpthread
+LDFLAGS += -lsiloh5
 
 
 all: main.o kernel.o
