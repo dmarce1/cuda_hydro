@@ -8,6 +8,11 @@
 #ifndef KERNEL_HPP_
 #define KERNEL_HPP_
 
+
+//#define CARTESIAN
+#define CYLINDRICAL
+//#define SPHERICAL
+
 #define BW 2
 #define NDIM 3
 #define NF 6
