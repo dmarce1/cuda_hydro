@@ -29,138 +29,13 @@ using du_real = float;
 	func <<< blocks, threads, size >>> ( __VA_ARGS__ ); \
 	cudaStreamSynchronize(0)
 
-#ifdef CARTESIAN
 __device__
-inline real h1(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real h2(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real h3(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real hhh(real x, real y, real z) {
-	return real(1);
-}
-#endif
-
-#ifdef CYLINDRICAL
-__device__
-inline real h1(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real h2(real x, real y, real z) {
-	return x;
-}
-__device__
-inline real h3(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real hhh(real x, real y, real z) {
-	return x;
-}
-#endif
-
-#ifdef SPHERICAL
-__device__
-inline real h1(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real h2(real x, real y, real z) {
-	return x;
-}
-__device__
-inline real h3(real x, real y, real z) {
-	return real(1);
-}
-__device__
-inline real hhh(real x, real y, real z) {
-	return x;
-}
-#endif
-
-__device__ static double* devXf[NDIM];
-__device__ static double* devXc[NDIM];
-static double* hostXf[NDIM];
-static double* hostXc[NDIM];
-
-__global__
-void set_device_ptrs(double* xc, double* yc, double* zc, double* xf, double* yf,
-		double* zf) {
-	devXf[XDIM] = xf;
-	devXf[YDIM] = yf;
-	devXf[ZDIM] = zf;
-	devXc[XDIM] = xc;
-	devXc[YDIM] = yc;
-	devXc[ZDIM] = zc;
-}
-
-void create_coordinates(real dx, real dy, real dz, int nx, int ny, int nz) {
-	double* dXc[NDIM];
-	double* dXf[NDIM];
-	const int sz = nx * ny * nz;
-	for (int d = 0; d != NDIM; ++d) {
-		hostXf[d] = new double[sz];
-		hostXc[d] = new double[sz];
-		cudaMalloc(&(dXf[d]), sz * sizeof(real));
-		cudaMalloc(&(dXc[d]), sz * sizeof(real));
-	}
-	real x0, y0, z0;
-#ifdef CARTESIAN
-	x0 = y0 = z0 = 0.0;
-#endif
-#ifdef CYLINDRICAL
-	x0 = y0 = 0.0;
-	z0 = (nz - 2 * BW + 1) * dz / 2.0;
-#endif
-#ifdef SPHERICAL
-	x0 = y0 = 0.0;
-	z0 = -1.0;
-#endif
-	for (int i = 0; i != nx; ++i) {
-		for (int j = 0; j != ny; ++j) {
-			for (int k = 0; k != nz; ++k) {
-				const int iii = i + nx * (j + ny * k);
-				hostXf[XDIM][iii] = (i - BW) * dx + x0;
-				hostXf[YDIM][iii] = (j - BW) * dy + y0;
-				hostXf[ZDIM][iii] = (k - BW) * dz + z0;
-				hostXc[XDIM][iii] = (i - BW + 0.5) * dx + x0;
-				hostXc[YDIM][iii] = (j - BW + 0.5) * dy + y0;
-				hostXc[ZDIM][iii] = (k - BW + 0.5) * dz + z0;
-			}
-		}
-	}
-	for (int d = 0; d != NDIM; ++d) {
-		cudaMemcpy(&(dXf[d]), hostXf[d], sz * sizeof(real),
-				cudaMemcpyHostToDevice);
-		cudaMemcpy(&(dXc[d]), hostXc[d], sz * sizeof(real),
-				cudaMemcpyHostToDevice);
-	}
-	INVOKE2(set_device_ptrs, 1, 1,
-			(dXc[XDIM]), (dXc[YDIM]), (dXc[ZDIM]), (dXf[XDIM]), (dXf[YDIM]), (dXf[ZDIM]));
-}
-
-__device__
-real h(int dim, real x, real y, real z) {
-	typedef real (*func_type)(real, real, real);
-	static const func_type func[NDIM] = { h1, h2, h3 };
-	return func[dim](x, y, z);
-}
-
-__device__
-inline real minmod(real a, real b) {
+                                                inline real minmod(real a, real b) {
 	return (copysign(0.5, a) + copysign(0.5, b)) * fmin(fabs(a), fabs(b));
 }
 
 __device__
-inline real minmod_theta(real a, real b) {
+                                                inline real minmod_theta(real a, real b) {
 	return minmod(real(THETA) * minmod(a, b), real(0.5) * (a + b));
 }
 
@@ -196,16 +71,68 @@ void cuda_prep(real* U_base, real* U0_base, du_real* dU_base) {
 
 }
 
+__device__
+void lower_boundary_outflow(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx - 2 * di] = U[f][idx - di] = U[f][idx];
+	}
+	U[mom_dim][idx - 2 * di] = U[mom_dim][idx - di] = fmax(0.0,
+			U[mom_dim][idx]);
+}
+
+__device__
+void lower_boundary_reflecting(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx - di] = U[f][idx];
+		U[f][idx - 2 * di] = U[f][idx + di];
+	}
+	U[mom_dim][idx - 2 * di] = -U[mom_dim][idx - 2 * di];
+	U[mom_dim][idx - di] = -U[mom_dim][idx - di];
+}
+
+__device__
+void lower_boundary_periodic(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx - di] = U[f][idx + (nx - 2 * BW - 1) * di];
+		U[f][idx - 2 * di] = U[f][idx + (nx - 2 * BW - 2) * di];
+	}
+}
+
+__device__
+void upper_boundary_outflow(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx + 2 * di] = U[f][idx + di] = U[f][idx];
+	}
+	U[mom_dim][idx + 2 * di] = U[mom_dim][idx + di] = fmin(0.0,
+			U[mom_dim][idx]);
+}
+
+__device__
+void upper_boundary_reflecting(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx + di] = U[f][idx];
+		U[f][idx + 2 * di] = U[f][idx - di];
+	}
+	U[mom_dim][idx + 2 * di] = -U[mom_dim][idx + 2 * di];
+	U[mom_dim][idx + di] = -U[mom_dim][idx + di];
+}
+
+__device__
+void upper_boundary_periodic(real** U, int idx, int di, int nx, int mom_dim) {
+	for (int f = 0; f != NF; ++f) {
+		U[f][idx + di] = U[f][idx + di * (1 - nx + 2 * BW)];
+		U[f][idx + 2 * di] = U[f][idx + di * (2 - nx + 2 * BW)];
+	}
+}
+
 __global__
-void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
-		real* avisc) {
+void cuda_flux(real* U_base, du_real* dU_base, real dx, real dy, real dz,
+		int dim, int di, real* avisc) {
 
 	int nx, ny, nz;
 	int xi, yi, zi;
 	int nx1, ny1, nz1;
-
-	__shared__
-	extern real shared_real[];
+	real dxinv, h3pinv, h3minv, da, hjinv;
 
 	switch (dim) {
 	case XDIM:
@@ -218,6 +145,7 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 		nx1 = nx + 2 * BW - 1;
 		ny1 = ny + 2 * BW;
 		nz1 = nz + 2 * BW;
+		dxinv = 1.0 / dx;
 		break;
 	case YDIM:
 		ny = blockDim.x;
@@ -229,6 +157,7 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 		nx1 = nx + 2 * BW;
 		ny1 = ny + 2 * BW - 1;
 		nz1 = nz + 2 * BW;
+		dxinv = 1.0 / dy;
 		break;
 		/*case ZDIM:*/
 	default:
@@ -241,10 +170,36 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 		nx1 = nx + 2 * BW;
 		ny1 = ny + 2 * BW;
 		nz1 = nz + 2 * BW - 1;
+		dxinv = 1.0 / dz;
 	}
+
+#ifdef CARTESIAN
+	da = hjinv = h3pinv = h3minv = 1.0;
+#endif
+#ifdef CYLINDRICAL
+	const real R = fabs(
+			dim == XDIM ?
+					real(xi - BW) * dx : (real(xi - BW) + real(0.5)) * dx);
+	switch (dim) {
+	case XDIM:
+		hjinv = 1.0;
+		da = R;
+		h3pinv = 1.0 / (R + 0.5 * dx);
+		h3minv = 1.0 / (R - 0.5 * dx);
+		break;
+	case YDIM:
+		da = 1.0;
+		h3pinv = h3minv = hjinv = (R != 0.0) ? 1.0 / R : 0.0;
+		break;
+	case ZDIM:
+		da = hjinv = h3pinv = h3minv = 1.0;
+		break;
+	}
+#endif
 
 	const int idx = (xi + BW) + nx1 * (yi + BW) + (nx1 * ny1) * (zi + BW);
 	const int sz = (nx1) * (ny1) * (nz1);
+	const int dims[NDIM] = { nx1, ny1, nz1 };
 	real F[NF];
 	real * U[NF];
 	du_real* dU[NF];
@@ -253,22 +208,36 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 		dU[f] = dU_base + f * sz;
 	}
 	const int mom_dim = mom_i + dim;
+
+#ifdef CARTESIAN
 	if (threadIdx.x == 0) {
-		for (int f = 0; f != NF; ++f) {
-			U[f][idx - 2 * di] = U[f][idx - di] = U[f][idx];
-		}
-		U[mom_dim][idx - 2 * di] = U[mom_dim][idx - di] = fmax(0.0,
-				U[mom_dim][idx]);
+		lower_boundary_outflow(U, idx, di, dims[dim], mom_dim);
 	} else if (threadIdx.x == blockDim.x - 2) {
-		for (int f = 0; f != NF; ++f) {
-			U[f][idx + 2 * di] = U[f][idx + di] = U[f][idx];
-		}
-		U[mom_dim][idx + 2 * di] = U[mom_dim][idx + di] = fmin(0.0,
-				U[mom_dim][idx]);
+		upper_boundary_outflow(U, idx, di, dims[dim], mom_dim);
 	}
+#endif
+#ifdef CYLINDRICAL
+	if (threadIdx.x == 0) {
+		if (dim == XDIM) {
+			lower_boundary_reflecting(U, idx, di, dims[dim], mom_dim);
+		} else if (dim == YDIM) {
+			lower_boundary_periodic(U, idx, di, dims[dim], mom_dim);
+		} else if (dim == ZDIM) {
+			lower_boundary_outflow(U, idx, di, dims[dim], mom_dim);
+		}
+	}
+	else if (threadIdx.x == blockDim.x - 2) {
+		if (dim != YDIM) {
+			upper_boundary_outflow(U, idx, di, dims[dim], mom_dim);
+		} else if (dim == YDIM) {
+			upper_boundary_periodic(U, idx, di, dims[dim], mom_dim);
+		}
+	}
+#endif
+#ifdef SPHERICAL
+#endif
 	__syncthreads();
 
-	real dxinv = real(1.0) / dx;
 	real slm, slp;
 	real vm2[NF], vm1[NF], vp1[NF], vp2[NF];
 	real UR[NF], UL[NF];
@@ -338,35 +307,24 @@ void cuda_flux(real* U_base, du_real* dU_base, real dx, int dim, int di,
 	for (int f = 0; f != NF; ++f) {
 		F[f] = vr * UR[f] + vl * UL[f] - a * (UR[f] - UL[f]);
 	}
-	F[mom_dim] += pl + pr;
+//	F[mom_dim] += pl + pr;
+	const real pface = (pl + pr) * 0.5;
 	F[ene_i] += vl * pl + vr * pr;
 	for (int f = 0; f != NF; ++f) {
 		F[f] *= 0.5;
 	}
-	const real x = devXf[XDIM][idx];
-	const real y = devXf[YDIM][idx];
-	const real z = devXf[ZDIM][idx];
-	const real xcp = devXc[XDIM][idx];
-	const real ycp = devXc[YDIM][idx];
-	const real zcp = devXc[ZDIM][idx];
-	const real xcm = devXc[XDIM][idx - di];
-	const real ycm = devXc[YDIM][idx - di];
-	const real zcm = devXc[ZDIM][idx - di];
-	const real h3 = hhh(x, y, z);
-	const real hjinv = real(1) / h(dim, x, y, z);
-	const real hjinv2 = hjinv * hjinv;
-	const real h3pinv = real(1) / hhh(xcp, ycp, zcp);
-	const real h3minv = real(1) / hhh(xcm, ycm, zcm);
-	const real factorp = dxinv * h3 * hjinv2 * h3pinv;
-	const real factorm = dxinv * h3 * hjinv2 * h3minv;
+	real factorp = dxinv * h3pinv * da;
+	real factorm = dxinv * h3minv * da;
 	for (int f = 0; f != NF; ++f) {
 		atomicAdd(&(dU[f][idx]), du_real(F[f] * factorp));
 		atomicAdd(&(dU[f][idx - di]), -du_real(F[f] * factorm));
 	}
+	atomicAdd(&(dU[mom_dim][idx]), du_real(pface * dxinv * hjinv));
+	atomicAdd(&(dU[mom_dim][idx - di]), -du_real(pface * dxinv * hjinv));
 	if (avisc != nullptr) {
 		int tid = threadIdx.x
 				+ blockDim.x * (blockIdx.x + gridDim.x * blockIdx.y);
-		avisc[tid] = a;
+		avisc[tid] = a * hjinv;
 	}
 
 }
@@ -409,7 +367,7 @@ void cuda_advance(real* U_base, real* U0_base, du_real* dU_base, real dt,
 }
 
 __global__
-void cuda_source(real* U_base, du_real* dU_base) {
+void cuda_source(real* U_base, du_real* dU_base, real dx, real dy, real dz) {
 	const int nx1 = blockDim.x + 2 * BW;
 	const int ny1 = gridDim.x + 2 * BW;
 	const int nz1 = gridDim.y + 2 * BW;
@@ -424,30 +382,14 @@ void cuda_source(real* U_base, du_real* dU_base) {
 		U[f] = U_base + f * sz;
 		dU[f] = dU_base + f * sz;
 	}
-#ifdef CARTESIAN
-#endif
 #ifdef CYLINDRICAL
-	real ek = 0.0;
-	for (int d = 0; d != NDIM; ++d) {
-		ek += U[mom_i + d][idx] * U[mom_i + d][idx];
-	}
-	const real rhoinv = real(1.0) / U[den_i][idx];
-	ek *= 0.5 * rhoinv;
-	const real et = U[ene_i][idx];
-	real ei = et - ek;
-	if (ei < et * DE_SWITCH_1) {
-		ei = pow(U[tau_i][idx], FGAMMA);
-	}
-	real p = (FGAMMA - 1.0) * ei;
-	const real Rinv = 1.0 / devXc[XDIM][idx];
-	const real R3inv = Rinv * Rinv * Rinv;
-	dU[mom_i + XDIM][idx] += p * Rinv;
-	dU[mom_i + YDIM][idx] += U[den_i][idx] * U[mom_i + YDIM][idx]
-			* U[mom_i + YDIM][idx] * R3inv;
+	const real R = dx * (real(xi - BW) + real(0.5));
+	const real Rinv = 1.0 / R;
+	dU[mom_i + XDIM][idx] += U[mom_i + YDIM][idx] * U[mom_i + YDIM][idx]
+			* U[den_i][idx] * Rinv;
+	dU[mom_i + YDIM][idx] -= U[mom_i + XDIM][idx] * U[mom_i + YDIM][idx]
+			* U[den_i][idx] * Rinv;
 #endif
-#ifdef SPHERICAL
-#endif
-
 }
 
 real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
@@ -470,7 +412,6 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 	real dt;
 
 	if (first_call) {
-		create_coordinates(dx, dy, dz, nx, ny, nz);
 		blocks[XDIM] = dim3(ny - 2 * BW, nz - 2 * BW);
 		blocks[YDIM] = dim3(nx - 2 * BW, nz - 2 * BW);
 		blocks[ZDIM] = dim3(nx - 2 * BW, ny - 2 * BW);
@@ -499,7 +440,7 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 
 	INVOKE2(cuda_prep, blocks0, threads0, U, U0, dU);
 
-	std::future < real > dt_fut[NDIM];
+	std::future<real> dt_fut[NDIM];
 
 	dt = std::numeric_limits < real > ::max();
 
@@ -510,7 +451,7 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 			dt_fut[dim] =
 					std::async(std::launch::async,
 							[=]() {
-								INVOKE2(cuda_flux, (blocks[dim]),(threads[dim]),U, dU, dX[dim], dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
+								INVOKE2(cuda_flux, (blocks[dim]),(threads[dim]),U, dU, dx, dy, dz, dim, (di[dim]), (rk == 0 ? avisc[dim] : nullptr));
 								real dt = std::numeric_limits<real>::max();
 								if (rk == 0) {
 									const int this_sz = blocks[dim].x * blocks[dim].y * threads[dim].x;
@@ -530,6 +471,7 @@ real cuda_hydro_wrapper(real* rho, real* s[NDIM], real* egas, int nx, int ny,
 				dt = std::min(dt, this_dt);
 			}
 		}
+		INVOKE2(cuda_source, blocks0, threads0, U, dU, dx, dy, dz);
 		/**/INVOKE2(cuda_advance, blocks0, threads0, U, U0, dU, dt, beta);
 
 		/**/}
